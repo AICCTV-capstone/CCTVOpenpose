@@ -1,0 +1,101 @@
+#MQTT를 사용하여 이미지를 주고받고, 이미지에서 사람을 감지하여 적절한 처리를 수행하는 기능
+
+import sys
+import io
+import time
+from PIL import Image
+import paho.mqtt.client as mqtt
+import queue
+import numpy as np
+import cv2
+import openpose
+import base64
+import subprocess
+import os
+from jinja2 import Environment, FileSystemLoader
+
+broker_ip = "192.168.0.7" #"broker.hivemq.com" # 현재 이 컴퓨터를 브로커로 설정
+broker_ip = "broker.hivemq.com" # 현재 이 컴퓨터를 브로커로 설정
+broker_ip = "43.201.14.40"
+#최종적으로 "43.201.14.40" 주소가 broker_ip 변수에 할당됩니다.
+
+stream = None # stream 변수는 이미지 데이터를 저장하기 위한 변수
+isRunning = True #isRunning 변수는 프로그램의 실행 여부를 결정하는 플래그
+myqueue = queue.Queue(1) #myqueue는 크기가 1인 큐(queue) 객체로, 이미지 데이터를 임시로 저장
+
+
+def onStart(): #onStart 함수는 MQTT 클라이언트를 사용하여 "command" 토픽에 "start" 메시지를 발행
+    client.publish("command", "start")
+    pass
+
+
+def onStop(): #onStop 함수는 MQTT 클라이언트를 사용하여 "command" 토픽에 "stop" 메시지를 발행
+    client.publish("command", "stop")
+    pass
+
+
+def onExit(): #onExit 함수는 MQTT 클라이언트를 사용하여 "command" 토픽에 "stop" 메시지를 발행
+    global isRunning
+    client.publish("command", "stop")
+    isRunning = False # 프로그램 종료
+    pass
+
+
+def onConnect(client, userdata, flag, rc): # connect() 메서드를 사용하여 MQTT 브로커에 연결
+    if(rc == 0):
+        print("연결되었습니다")         # 연결이 됨
+        client.subscribe("cmlee", qos=0)      # "cmlee"라는 토픽으로 수신을 기다림
+    pass
+
+
+def onMessage(client, userdata, msg): #onMessage 함수는 "cmlee" 토픽으로부터 메시지를 수신했을 때 호출되는 콜백
+    global stream
+    bytes = msg.payload
+
+    stream = io.BytesIO()   # 메모리 파일 stream을 생성함
+    stream.write(bytes)             # 메모리 파일에 저장
+    stream.seek(0)          # 파일 커서를 맨 앞으로 옮김
+    if myqueue.empty() == False: 
+        myqueue.queue.clear()
+
+    myqueue.put(stream)  # 이미지 데이터 queue에 넣어둠
+    pass
+
+
+client = mqtt.Client()          # mqtt 클라이언트 객체 생성
+client.on_connect = onConnect   # 연결 요청 시 콜백 함수
+client.on_message = onMessage   # 이미지가 도착했을 때 콜백 함수
+client.connect(broker_ip, 1883) # broker_ip와 포트 1883을 사용하여 MQTT 브로커에 연결 요청
+
+
+client.loop_start() #MQTT 클라이언트의 네트워크 루프를 시작합니다. 
+
+while isRunning: #isRunning 변수가 True인 동안 계속해서 실행되는 무한 루프
+    client.publish("command", "send")
+
+    while myqueue.empty() == True: #command 토픽에 "send" 메시지를 발행하고, myqueue가 비어 있을 때까지 대기
+        pass
+
+
+    #myqueue에서 이미지 데이터를 가져와 디코딩한 후 Image 객체로 변환
+    stream = myqueue.get()  # 이미지 데이터 가져옴
+    stream.seek(0)
+    base64_string = stream.read().decode('utf-8')
+
+
+    imgdata = base64.b64decode(base64_string)
+    dataBytesIO = io.BytesIO(imgdata)
+    image = Image.open(dataBytesIO)  # stream 객체로부터 Image 객체로 변환
+    numpy_image = np.array(image)
+    ret = openpose.detect(numpy_image) #openpose.detect 함수를 사용하여 이미지에서 사람을 감지하고 결과를 ret 변수에 저장
+
+    if ret == -1:
+        print("사람인식 불가")
+    elif ret == 1:
+        print("쓰러졌습니다")
+        client.publish("urgent", "on") #필요한 경우 MQTT 클라이언트를 사용하여 "urgent" 토픽에 메시지를 발행하거나 외부 프로세스를 실행
+
+        subprocess.call(['python3', 'kakao_f.py'])
+    elif ret == 0:
+        print("서있습니다")
+        client.publish("urgent", "off")
