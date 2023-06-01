@@ -1,0 +1,98 @@
+#OpenPose를 사용하여 이미지에서 사람의 포즈를 검출하는 함수 detect()를 정의하는 부분
+import sys
+import io
+import time
+from PIL import Image
+import cv2
+
+#키 포인트를 나타내는 사람의 다양한 신체 부위를 정의한 딕셔너리
+BODY_PARTS = { "Head": 0, "Neck": 1, "RShoulder": 2, "RElbow": 3, "RWrist": 4,
+                "LShoulder": 5, "LElbow": 6, "LWrist": 7, "RHip": 8, "RKnee": 9,
+                "RAnkle": 10, "LHip": 11, "LKnee": 12, "LAnkle": 13, "Chest": 14,
+                "Background": 15 }
+
+
+# MPII에서 각 파트 번호, 선으로 연결될 POSE_PAIRS
+POSE_PAIRS = [ ["Head", "Neck"], ["Neck", "RShoulder"], ["RShoulder", "RElbow"],
+                ["RElbow", "RWrist"], ["Neck", "LShoulder"], ["LShoulder", "LElbow"],
+                ["LElbow", "LWrist"], ["Neck", "Chest"], ["Chest", "RHip"], ["RHip", "RKnee"],
+                ["RKnee", "RAnkle"], ["Chest", "LHip"], ["LHip", "LKnee"], ["LKnee", "LAnkle"] ]
+
+#딥러닝 기반의 포즈 추정 모델을 사용하기 위해 필요한 파일 경로를 지정하는 부분, 파일 path
+protoFile = "./model/pose_deploy_linevec_faster_4_stages.prototxt" #Caffe 프레임워크로 포즈 추정 모델의 아키텍처를 정의
+weightsFile = "./model/pose_iter_160000.caffemodel" #사전 훈련된 가중치(weights) 파일
+
+#Caffe 프레임워크로 학습된 모델을 로드
+net = cv2.dnn.readNetFromCaffe(protoFile, weightsFile) 
+
+#detect() 함수는 이미지를 입력으로 받아서 사람의 포즈를 검출하고, 일부 포즈를 그린 이미지를 반환
+def detect(img): #이미지를 입력으로 받습니다. 입력 이미지의 크기와 색상을 확인하고, 전처리를 수행합니다.
+    image = img
+
+    # frame.shape = 불러온 이미지에서 height, width, color 받아옴
+    imageHeight, imageWidth, _ = image.shape
+
+    # network에 넣기 위해 전처리
+    inpBlob = cv2.dnn.blobFromImage(image, 1.0 / 255, (imageWidth, imageHeight), (0, 0, 0), swapRB=False, crop=False)
+    # network에 넣어주기
+    net.setInput(inpBlob) //전처리된 이미지를 네트워크의 입력으로 설정
+    # 결과 받아오기
+    output = net.forward() //네트워크를 통해 이미지를 forward하여 결과를 얻습
+
+    # output.shape[0] = 이미지 ID, [2] = 출력 맵의 높이, [3] = 너비
+    H = output.shape[2]
+    W = output.shape[3]
+
+    hx = 0
+    hy = 0
+    hc = 0
+
+    fx = 0
+    fy = 0
+    fc = 0
+
+    # 키포인트 검출시 이미지에 그려줌
+    points = []
+
+#각 신체 부위에 대해 검출 결과를 확인하고, 신뢰도가 일정 값 이상인 경우에만 포인트를 그리고 저장
+    for i in range(0, 15):
+        # 해당 신체부위 신뢰도 얻음
+        probMap = output[0, i, :, :]
+
+        # global 최대값 찾기
+        minVal, prob, minLoc, point = cv2.minMaxLoc(probMap)
+
+        # 원래 이미지에 맞게 점 위치 변경
+        x = (imageWidth * point[0]) / W
+        y = (imageHeight * point[1]) / H
+
+        # 키포인트 검출한 결과가 0.1보다 크면 points에 추가, 검출하지 않은 부위는 None으로
+        if prob > 0.01:
+            cv2.circle(image, (int(x), int(y)), 3, (0, 255, 255), thickness=-1, lineType=cv2.FILLED)
+            cv2.putText(image, "{}".format(i), (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, lineType=cv2.LINE_AA)
+            points.append((int(x), int(y)))
+            if (i == 0 or i == 1 or i == 2):
+                hx += int(x)
+                hy += int(y)
+                hc += 1
+            if (i == 12 or i == 10 or i == 13):
+                fx += int(x)
+                fy += int(y)
+                fc += 1
+        else:
+            points.append([None, None])
+
+    if (hc != 0):
+        hx /= hc
+        hy /= hc
+    if (fc != 0):
+        fx /= fc
+        fy /= fc
+
+    if (hc == 0 or fc == 0):
+        return -1
+
+    if fy - hy < 60:
+        return 1
+    else:
+        return 0
